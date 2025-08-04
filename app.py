@@ -24,20 +24,36 @@ def is_streamlit_cloud():
 
 class PostureDetector:
     def __init__(self):
-        self.pose = mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,
-            smooth_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.face_mesh = mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        # Don't initialize MediaPipe here - do it lazily when needed
+        self.pose = None
+        self.face_mesh = None
+        self._initialized = False
+    
+    def _initialize_mediapipe(self):
+        """Lazy initialization of MediaPipe with error handling"""
+        if self._initialized:
+            return True
+            
+        try:
+            self.pose = mp_pose.Pose(
+                static_image_mode=False,
+                model_complexity=1,
+                smooth_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self.face_mesh = mp_face_mesh.FaceMesh(
+                static_image_mode=False,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self._initialized = True
+            return True
+        except Exception as e:
+            st.error(f"❌ Failed to initialize MediaPipe: {str(e)}")
+            return False
         
     def calculate_angle(self, a, b, c):
         """Calculate angle between three points"""
@@ -59,6 +75,14 @@ class PostureDetector:
     
     def analyze_posture(self, landmarks, face_landmarks, exercise, sensitivity=1.0):
         """Main posture analysis method"""
+        # Initialize MediaPipe only when needed
+        if not self._initialize_mediapipe():
+            return {
+                "status": "MediaPipe initialization failed",
+                "correct": False,
+                "tips": ["Please try refreshing the page"]
+            }
+            
         feedback = {
             "status": "Not detected",
             "correct": False,
@@ -206,21 +230,47 @@ class PostureDetector:
 class ImageProcessor:
     """Handle image upload and processing for Streamlit Cloud"""
     def __init__(self):
-        self.pose = mp_pose.Pose(
-            static_image_mode=True,
-            model_complexity=2,
-            enable_segmentation=False,
-            min_detection_confidence=0.5
-        )
-        self.face_mesh = mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
-        )
+        # Don't initialize MediaPipe here - do it lazily when needed
+        self.pose = None
+        self.face_mesh = None
+        self._initialized = False
+    
+    def _initialize_mediapipe(self):
+        """Lazy initialization of MediaPipe with error handling"""
+        if self._initialized:
+            return True
+            
+        try:
+            self.pose = mp_pose.Pose(
+                static_image_mode=True,
+                model_complexity=1,  # Reduced complexity for cloud
+                enable_segmentation=False,
+                min_detection_confidence=0.5
+            )
+            self.face_mesh = mp_face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5
+            )
+            self._initialized = True
+            return True
+        except Exception as e:
+            st.error(f"❌ Failed to initialize MediaPipe for image processing: {str(e)}")
+            return False
     
     def process_uploaded_image(self, uploaded_file):
         """Process uploaded image for pose detection"""
+        # Initialize MediaPipe only when needed
+        if not self._initialize_mediapipe():
+            return {
+                'success': False,
+                'error': 'MediaPipe initialization failed',
+                'image': None,
+                'pose_landmarks': None,
+                'face_landmarks': None
+            }
+            
         try:
             # Convert uploaded file to opencv format
             image = Image.open(uploaded_file)
@@ -326,7 +376,11 @@ def main():
 
     # Initialize session state
     if 'image_processor' not in st.session_state:
-        st.session_state.image_processor = ImageProcessor()
+        try:
+            st.session_state.image_processor = ImageProcessor()
+        except Exception as e:
+            st.error(f"❌ Failed to initialize image processor: {str(e)}")
+            st.stop()
     if 'exercise_count' not in st.session_state:
         st.session_state.exercise_count = 0
     if 'success_count' not in st.session_state:
@@ -340,6 +394,12 @@ def main():
         if is_streamlit_cloud():
             st.warning("🌐 Running on Streamlit Cloud")
             st.info("📷 Camera not available - Use image upload instead")
+            st.markdown("""
+            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 0.5rem; margin: 0.5rem 0;">
+                <small><strong>⚠️ Note:</strong> MediaPipe may take a moment to initialize on cloud deployment. 
+                If you encounter errors, please try refreshing the page or uploading a different image.</small>
+            </div>
+            """, unsafe_allow_html=True)
         
         # Image upload section
         st.markdown("#### 📷 Image Upload")
@@ -409,7 +469,11 @@ def main():
         if uploaded_file is not None:
             # Process uploaded image
             with st.spinner("🔍 Analyzing posture..."):
-                result = st.session_state.image_processor.process_uploaded_image(uploaded_file)
+                try:
+                    result = st.session_state.image_processor.process_uploaded_image(uploaded_file)
+                except Exception as e:
+                    st.error(f"❌ Error during image processing: {str(e)}")
+                    result = {'success': False, 'error': str(e)}
             
             if result['success']:
                 # Display processed image
@@ -417,34 +481,38 @@ def main():
                 
                 # Analyze posture if landmarks detected
                 if result['pose_landmarks'] and result['face_landmarks']:
-                    detector = PostureDetector()
-                    landmarks = result['pose_landmarks'].landmark
-                    face_landmarks = result['face_landmarks'][0]
-                    feedback = detector.analyze_posture(landmarks, face_landmarks, exercise, sensitivity)
-                    
-                    # Display results
-                    if feedback["correct"]:
-                        if "Excellent" in feedback["status"]:
-                            st.markdown(f'<div class="status-excellent">🎉 {feedback["status"]}</div>', unsafe_allow_html=True)
+                    try:
+                        detector = PostureDetector()
+                        landmarks = result['pose_landmarks'].landmark
+                        face_landmarks = result['face_landmarks'][0]
+                        feedback = detector.analyze_posture(landmarks, face_landmarks, exercise, sensitivity)
+                        
+                        # Display results
+                        if feedback["correct"]:
+                            if "Excellent" in feedback["status"]:
+                                st.markdown(f'<div class="status-excellent">🎉 {feedback["status"]}</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown(f'<div class="status-good">✅ {feedback["status"]}</div>', unsafe_allow_html=True)
                         else:
-                            st.markdown(f'<div class="status-good">✅ {feedback["status"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<div class="status-poor">❌ {feedback["status"]}</div>', unsafe_allow_html=True)
-                    
-                    # Show tips
-                    if feedback["tips"]:
-                        st.markdown("#### 💡 Tips for Improvement:")
-                        for tip in feedback["tips"]:
-                            st.markdown(f"• {tip}")
-                    
-                    # Update session stats
-                    if feedback["correct"]:
-                        st.session_state.success_count += 1
-                    st.session_state.exercise_count += 1
+                            st.markdown(f'<div class="status-poor">❌ {feedback["status"]}</div>', unsafe_allow_html=True)
+                        
+                        # Show tips
+                        if feedback["tips"]:
+                            st.markdown("#### 💡 Tips for Improvement:")
+                            for tip in feedback["tips"]:
+                                st.markdown(f"• {tip}")
+                        
+                        # Update session stats
+                        if feedback["correct"]:
+                            st.session_state.success_count += 1
+                        st.session_state.exercise_count += 1
+                    except Exception as e:
+                        st.error(f"❌ Error during posture analysis: {str(e)}")
                 else:
                     st.warning("⚠️ Could not detect pose landmarks. Please upload a clearer image with your full head and shoulders visible.")
             else:
                 st.error(f"❌ Error processing image: {result['error']}")
+                st.info("💡 Try uploading a different image or check if the image format is supported")
         else:
             # Upload placeholder
             st.markdown("""
